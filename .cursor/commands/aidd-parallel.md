@@ -1,0 +1,1 @@
+../../node_modules/@wolfgames/cortex/aidd/commands/aidd-parallel.md
