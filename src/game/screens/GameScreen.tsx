@@ -1,5 +1,6 @@
 import { onMount, onCleanup } from 'solid-js';
 
+import { useScreen, type ScreenId } from '~/core/systems/screens';
 import { useAssets } from '~/core/systems/assets';
 import { PauseOverlay, useTuning, type ScaffoldTuning } from '~/core';
 import { Logo } from '~/core/ui/Logo';
@@ -14,6 +15,7 @@ import { gameState } from '~/game/state';
 import { setupGame } from '~/game/mygame/screens/gameController';
 
 export default function GameScreen() {
+  const { goto } = useScreen();
   const { coordinator } = useAssets();
   const tuning = useTuning<ScaffoldTuning, GameTuning>();
   const audio = useAudio();
@@ -28,6 +30,7 @@ export default function GameScreen() {
     audio,
     gameData,
     analytics,
+    goto: (screen) => { void goto(screen as ScreenId); },
   });
 
   onMount(() => {

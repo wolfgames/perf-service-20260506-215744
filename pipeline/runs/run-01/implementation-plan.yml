@@ -1,0 +1,552 @@
+# implementation-plan.yml — Structured batch execution plan
+# Written by phase 30 (plan). Read by implement, integrate, player-flow, stabilize.
+
+game: "RunBench"
+gdd_type: "additive"
+total_batches: 8
+total_features: 17
+new_files: 18
+modified_files: 6
+
+viewport_budget:
+  default:
+    hud_top_px: 48
+    canvas_play_area_px: 732
+    dom_reserved_top: 0
+    dom_reserved_bottom: 64
+    logo_within_reserved: 32
+    total_screen: 844
+    note: "390x844 portrait; HUD top bar 48px + 732px play area + 64px reserved (32px logo) = 844px"
+
+resolved_questions:
+  - question: "What are the FPS thresholds that define performance tiers?"
+    decision: "Excellent >=55fps, Good >=45fps, Fair >=30fps, Low <30fps"
+    rationale: >
+      Thresholds derived from standard mobile GPU capability tiers (high-end, mid-range,
+      budget, low-end). Aligns with 60fps target device profile. Values are hard-coded
+      constants in PerfTracker.ts; secondary pass may tune from real device data.
+
+  - question: "Does PauseOverlay need to be suppressed or left inert for RunBench?"
+    decision: "Leave PauseOverlay rendered but never trigger it — RunBench game state never emits a pause action"
+    rationale: >
+      GDD states 'no pause button by design'. Guardrail #8 forbids modifying src/core/.
+      PauseOverlay is core-managed; the correct approach is to never emit a pause trigger
+      from the RunBench GameController. PauseOverlay renders but has no activation path.
+
+  - question: "How should deviceId_hash be computed for the run seed formula?"
+    decision: "Generate a random 32-bit integer on first visit, persist to localStorage under key 'runbench-device-id'; read on subsequent visits"
+    rationale: >
+      Hash of User-Agent is non-unique (shared devices, same browser model). Canvas
+      fingerprint adds latency. A random value persisted to localStorage is deterministic
+      per device after first visit, simple to implement, and avoids fingerprinting concerns.
+      Fallback: if localStorage unavailable, use 0 (seed degrades to runNumber * 48271).
+
+preserve_list: []
+# Additive GDD on greenfield stub — nothing to preserve from existing mygame/ stub beyond
+# the contract shape (setupGame / setupStartScreen exports from index.ts).
+
+batches:
+
+  # =============================================================================
+  # BATCH 1 — P0 — ECS Plugin + GameController Foundation
+  # Player sees: dark canvas on screen, Pixi initialized, no crash, layer hierarchy live
+  # This is the critical integration point; all gameplay depends on it.
+  # =============================================================================
+  - id: 1
+    name: "GameController Foundation — Pixi init + ECS wiring"
+    priority: P0
+    player_visible: "player sees a dark canvas fill the screen; no DOM flash, no crash"
+    features: [game-controller-pixi]
+    cos_covered: [core-interaction, canvas, animated-dynamics, scoring]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: [full-canvas]
+      feedback_surfaces: [canvas]
+    acceptance:
+      - given: "GameScreen mounts and setupGame is called"
+        should: "Pixi Application initializes with gameMode:pixi; canvas appended to container; no error thrown"
+      - given: "GameController.init() completes"
+        should: "ECS database created from RunBenchPlugin; setActiveDb(db) called; bridgeEcsToSignals wired"
+      - given: "GameController.destroy() called"
+        should: "GSAP tweens killed, Pixi app destroyed, ECS bridge cleaned up, setActiveDb(null) called — in that exact order"
+      - given: "Pixi app is initialized"
+        should: "Stage eventMode='static'; bg layer eventMode='none'; game layer eventMode='passive'; ui layer eventMode='passive'"
+    test_loci:
+      - describe: "GameController: init and destroy lifecycle"
+        file: "src/game/runbench/GameController.test.ts"
+        cases:
+          - "Pixi Application initializes with gameMode:pixi; canvas appended to container; no error thrown"
+          - "ECS database created from RunBenchPlugin; setActiveDb(db) called; bridgeEcsToSignals wired"
+          - "GSAP tweens killed, Pixi app destroyed, ECS bridge cleaned up, setActiveDb(null) called — in that exact order"
+          - "Stage eventMode='static'; bg layer eventMode='none'; game layer eventMode='passive'; ui layer eventMode='passive'"
+    files:
+      state:
+        - src/game/runbench/state/RunBenchPlugin.ts
+      integration:
+        - src/game/runbench/GameController.ts
+        - src/game/runbench/index.ts
+        - src/game/mygame/screens/gameController.ts
+        - src/game/mygame/index.ts
+      test:
+        - src/game/runbench/GameController.test.ts
+    how:
+      - "Create src/game/runbench/GameController.ts: export setupGame with gameMode:'pixi'; init Pixi Application (resizeTo container, resolution=Math.min(devicePixelRatio,2)); create layer hierarchy (bg, game, hud, ui containers on stage); update src/game/mygame/screens/gameController.ts to re-export from runbench ('export { setupGame } from \"~/game/runbench/GameController\"')"
+      - "Create RunBenchPlugin.ts as ECS plugin with resource definitions (distance:number, fps:number, fpsAverage:number, phase:'idle'|'playing'|'dying'); wire setActiveDb(db) and bridgeEcsToSignals in init; destroy in exact order: GSAP.killTweensOf(stage) → app.destroy() → cleanupObserve?.() → setActiveDb(null)"
+      - "Create src/game/runbench/index.ts: export { setupGame } from './GameController'; export { setupStartScreen } from './screens/startView' (stub startView in runbench for now); update src/game/mygame/index.ts to re-export from runbench paths"
+    risk: HIGH
+    risk_reason: "Central integration point — Pixi init, ECS wiring, layer hierarchy, destruction order must all be correct before any gameplay can be added"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (GameController.ts + index.ts)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk clean for cos_covered (canvas: canvas renders; core-interaction: event modes set correctly)"
+      - "touch targets ≥ 44 px and feedback surfaces present per ux_zones"
+      - "screen root elements consume reserved_top_px=0 / reserved_bottom_px=64 as padding (logo zone clear)"
+      - "bun run build + bun test pass within 3 fix cycles"
+      - "destruction order verified: GSAP → Pixi → ECS bridge → setActiveDb(null)"
+
+  # =============================================================================
+  # BATCH 2 — P0 — Runner Entity + Physics Engine + Input Handler
+  # Player sees: silhouette runner auto-scrolling, tap to jump arc, gravity pulls down
+  # HOOK BATCH — first rewarding player experience
+  # =============================================================================
+  - id: 2
+    name: "Runner + Physics + Input — tap to jump"
+    priority: P0
+    player_visible: "player taps screen; runner jumps with visible arc and gravity; double-tap gives second jump; hold >=200ms crouches runner"
+    features: [runner-entity, physics-engine, input-handler]
+    cos_covered: [core-interaction, animated-dynamics]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: [full-canvas]
+      feedback_surfaces: [canvas, runner-sprite]
+    acceptance:
+      - given: "player taps screen for <200ms while runner is on ground"
+        should: "runner jumps immediately (<100ms visual response); jump arc follows parabolic physics (gravity=2200px/s², jumpV=-900px/s); runner Y changes visibly"
+      - given: "runner is airborne (jumpCount=1) and player taps <200ms"
+        should: "double jump fires; jumpV=-700px/s; jumpCount becomes 2; no further jump available until landing"
+      - given: "player holds tap >=200ms"
+        should: "runner crouches (hitbox shrinks 50%); state=crouching; hold maintained for minimum 300ms"
+      - given: "runner lands on a platform"
+        should: "jumpCount resets to 0; state transitions to run-cycle; landing is animated (squash/settle via GSAP)"
+      - given: "game state phase=dying"
+        should: "all pointer input is blocked; no jump or crouch fires"
+      - given: "pointer events fired on canvas container"
+        should: "pointerdown/pointerup used (not touchstart/mousedown); touch-action:none set on canvas container"
+      - given: "runner animates"
+        should: "run-cycle frames play on ground; jump-pose frame shown airborne ascending; fall-pose frame shown descending"
+    test_loci:
+      - describe: "physics: gravity, jump, double-jump"
+        file: "src/game/runbench/systems/PhysicsSystem.test.ts"
+        cases:
+          - "runner jumps immediately (<100ms visual response); jump arc follows parabolic physics (gravity=2200px/s², jumpV=-900px/s); runner Y changes visibly"
+          - "double jump fires; jumpV=-700px/s; jumpCount becomes 2; no further jump available until landing"
+          - "runner crouches (hitbox shrinks 50%); state=crouching; hold maintained for minimum 300ms"
+          - "jumpCount resets to 0; state transitions to run-cycle; landing is animated (squash/settle via GSAP)"
+      - describe: "input: tap/hold/block"
+        file: "src/game/runbench/input/InputHandler.test.ts"
+        cases:
+          - "all pointer input is blocked; no jump or crouch fires"
+          - "pointerdown/pointerup used (not touchstart/mousedown); touch-action:none set on canvas container"
+    files:
+      state:
+        - src/game/runbench/state/RunBenchPlugin.ts
+        - src/game/runbench/entities/Runner.ts
+      integration:
+        - src/game/runbench/systems/PhysicsSystem.ts
+        - src/game/runbench/input/InputHandler.ts
+        - src/game/runbench/GameController.ts
+      test:
+        - src/game/runbench/systems/PhysicsSystem.test.ts
+        - src/game/runbench/input/InputHandler.test.ts
+    how:
+      - "Add Runner ECS components to RunBenchPlugin: position (x,y), velocity (vx,vy), jumpCount (0-2), state (idle|airborne|crouching|dying); X locked to 30% screen width (camera follows world, runner X is constant)"
+      - "Implement PhysicsSystem.step(db, dt): apply gravity to vy each frame, integrate position, detect platform collision, reset jumpCount on landing, camera-lag Y tracking with 80ms lag; pure step() — no Math.random(), no Pixi"
+      - "Implement InputHandler: pointerdown starts timer; pointerup <200ms = jump (dispatch action); pointerup >=200ms ends crouch; blocked when phase=dying; set touch-action:none on canvas container; use pointerdown/pointerup per core-interaction CoS (collision-resolved: pointer-event-model)"
+    risk: HIGH
+    risk_reason: "Dual-gesture tap/hold detection on 200ms threshold; misclassification causes wrong actions; physics multi-variable interaction (gravity, scroll speed, camera lag) must be deterministic"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (InputHandler registered in GameController; PhysicsSystem ticked in game loop)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk clean for cos_covered (core-interaction: pointer events, block during non-idle; animated-dynamics: jump arc animated, landing bounce via GSAP)"
+      - "touch targets ≥ 44 px — full-canvas tap target satisfies this"
+      - "input blocked during dying state confirmed by test"
+      - "bun run build + bun test pass within 3 fix cycles"
+      - "interaction-archetype.md written to src/game/runbench/ per core-interaction CoS exit criterion"
+
+  # =============================================================================
+  # BATCH 3 — P0 — Procedural Generation + Tutorial Corridor + Platform Renderer
+  # Player sees: scrolling platforms, tutorial wide platforms first, procedural chunks after
+  # =============================================================================
+  - id: 3
+    name: "Procedural Generation + Tutorial Corridor + Platform Renderer"
+    priority: P0
+    player_visible: "player sees scrolling platforms of varying widths; first 10s of Run 1 has 3 wide safe platforms; subsequent platforms are procedurally generated"
+    features: [procedural-gen, tutorial-corridor, platform-renderer]
+    cos_covered: [canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: []
+      feedback_surfaces: [canvas]
+    acceptance:
+      - given: "Run 1 starts"
+        should: "tutorial corridor loads: 3 wide Normal platforms (width=256px), gaps=48px, no obstacles, duration covers first 10 seconds of scroll"
+      - given: "run 2+ starts (runCount >= 2)"
+        should: "procedural generation used from start; mulberry32 PRNG seeded with runNumber*48271+deviceId_hash"
+      - given: "ChunkFactory generates a chunk in Tier 1 (0-100m)"
+        should: "only Normal platforms generated; no obstacles placed"
+      - given: "ChunkFactory solvability check fails 10 consecutive times"
+        should: "fallback chunk (3-platform staircase) emitted; no infinite loop"
+      - given: "platform rendered on canvas"
+        should: "Normal platform: 96-256px wide grey rectangle >=16px tall; minimum visible width 96px > 48px CoS threshold; platform has stable entity ID"
+      - given: "Moving platform rendered"
+        should: "tint-shift indicator visible; Y oscillates between two positions at 40-80px/s"
+      - given: "Crumbling platform: runner lands on it for 600ms without leaving"
+        should: "crack overlay sprite appears on contact; crumble timer starts; GSAP dissolve animation fires at 600ms"
+    test_loci:
+      - describe: "ChunkFactory: generation + solvability + fallback"
+        file: "src/game/runbench/generation/ChunkFactory.test.ts"
+        cases:
+          - "tutorial corridor loads: 3 wide Normal platforms (width=256px), gaps=48px, no obstacles, duration covers first 10 seconds of scroll"
+          - "procedural generation used from start; mulberry32 PRNG seeded with runNumber*48271+deviceId_hash"
+          - "only Normal platforms generated; no obstacles placed"
+          - "fallback chunk (3-platform staircase) emitted; no infinite loop"
+      - describe: "PlatformRenderer: platform types and visuals"
+        file: "src/game/runbench/renderers/PlatformRenderer.test.ts"
+        cases:
+          - "Normal platform: 96-256px wide grey rectangle >=16px tall; minimum visible width 96px > 48px CoS threshold; platform has stable entity ID"
+          - "tint-shift indicator visible; Y oscillates between two positions at 40-80px/s"
+          - "crack overlay sprite appears on contact; crumble timer starts; GSAP dissolve animation fires at 600ms"
+    files:
+      state:
+        - src/game/runbench/state/RunBenchPlugin.ts
+        - src/game/runbench/data/tutorialChunk.ts
+        - src/game/runbench/data/fallbackChunk.ts
+      integration:
+        - src/game/runbench/generation/ChunkFactory.ts
+        - src/game/runbench/generation/SolvabilityChecker.ts
+        - src/game/runbench/renderers/PlatformRenderer.ts
+        - src/game/runbench/GameController.ts
+      test:
+        - src/game/runbench/generation/ChunkFactory.test.ts
+        - src/game/runbench/renderers/PlatformRenderer.test.ts
+    how:
+      - "Implement ChunkFactory.ts: mulberry32 PRNG (seed=runNumber*48271+deviceId_hash); four-step algorithm (chunk→obstacles→platform-type→solvability); tier gates 0/100/300/600m; 10-retry limit with fallback chunk; pure function — no Pixi/DOM; tutorialChunk.ts and fallbackChunk.ts as inline constants"
+      - "Implement SolvabilityChecker: simulate runner at minimum skill (single jump, gravity=2200px/s², jumpV=-900px/s) through generated chunk; reject if unreachable gap or obstacle blocks"
+      - "Implement PlatformRenderer: emoji/text fallback (grey rectangle + label) for platforms until scene-runbench atlas exists; stable entity IDs for animation diffing; Moving platform GSAP oscillation tween; Crumbling platform crack overlay display + GSAP dissolve on timer expiry"
+    risk: MEDIUM
+    risk_reason: "Solvability checker must simulate physics accurately; determinism requirement (seeded PRNG) must be verified; platform stable IDs required for animated-dynamics CoS"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (ChunkFactory wired to GameController; PlatformRenderer initialized with game layer + viewport bounds)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk clean for cos_covered (canvas: platform >=96px wide > 48px threshold; animated-dynamics: crumble dissolve animated, stable entity IDs used)"
+      - "tutorial chunk covers first 10s at 240px/s scroll: 10s * 240px/s = 2400px corridor"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # =============================================================================
+  # BATCH 4 — P0 — HUD Renderer + Scoring System + Performance Tracker
+  # Player sees: distance counter top-left, FPS counter top-right, both live
+  # =============================================================================
+  - id: 4
+    name: "HUD Renderer + Scoring + PerfTracker"
+    priority: P0
+    player_visible: "distance counter increments live as runner scrolls right; FPS counter shows real-time frame rate; both visible from run start"
+    features: [hud-renderer, scoring-system, perf-tracking]
+    cos_covered: [canvas, scoring]
+    ux_zones:
+      thumb_zone: [out-of-reach]
+      touch_targets: []
+      feedback_surfaces: [hud-distance, hud-fps]
+    acceptance:
+      - given: "runner is in play and has scrolled 100 pixels at 240px/s scroll speed"
+        should: "distance counter shows approximately 0.4m (100/240); counter increments in real-time each frame"
+      - given: "run starts and 60 frames have elapsed"
+        should: "FPS counter updates each frame; shows value derived from ticker.deltaTime; >=16px text, >=4.5:1 contrast"
+      - given: "HUD elements are rendered at top of screen"
+        should: "distance top-left, FPS top-right; combined HUD height <=48px; no overlap with game canvas or notch area; text >=16px"
+      - given: "runner completes a run (dies)"
+        should: "PerfTracker.snapshot() captures finalDistance (meters) and fpsAverage (running mean); snapshot stored in ECS resource"
+      - given: "scoring compared between skilled player (1000m) and beginner (100m)"
+        should: "score at 1000m is >=10x score at 100m (speed increases with distance — satisfies >=3x spread CoS requirement)"
+    test_loci:
+      - describe: "scoring: distance accumulation and spread"
+        file: "src/game/runbench/state/scoring.test.ts"
+        cases:
+          - "distance counter shows approximately 0.4m (100/240); counter increments in real-time each frame"
+          - "score at 1000m is >=10x score at 100m (speed increases with distance — satisfies >=3x spread CoS requirement)"
+      - describe: "PerfTracker: FPS sampling + run snapshot"
+        file: "src/game/runbench/systems/PerfTracker.test.ts"
+        cases:
+          - "FPS counter updates each frame; shows value derived from ticker.deltaTime; >=16px text, >=4.5:1 contrast"
+          - "PerfTracker.snapshot() captures finalDistance (meters) and fpsAverage (running mean); snapshot stored in ECS resource"
+      - describe: "HudRenderer: layout and readability"
+        file: "src/game/runbench/renderers/HudRenderer.test.ts"
+        cases:
+          - "distance top-left, FPS top-right; combined HUD height <=48px; no overlap with game canvas or notch area; text >=16px"
+    files:
+      state:
+        - src/game/runbench/state/RunBenchPlugin.ts
+      integration:
+        - src/game/runbench/renderers/HudRenderer.ts
+        - src/game/runbench/systems/PerfTracker.ts
+        - src/game/runbench/GameController.ts
+      test:
+        - src/game/runbench/state/scoring.test.ts
+        - src/game/runbench/systems/PerfTracker.test.ts
+        - src/game/runbench/renderers/HudRenderer.test.ts
+    how:
+      - "Add ECS resources to RunBenchPlugin: distance (number, meters), fps (number), fpsAverage (number), finalDistance (number), finalFpsAverage (number); scoring formula: distance grows as scroll speed increases (240+10*(distance/100) px/s); distance in meters = scrolled_pixels / 240"
+      - "Implement PerfTracker.ts: sample fps each frame via ticker.deltaTime (fps=1/dt); maintain running mean; on run end call snapshot() to write finalDistance + finalFpsAverage to ECS resources; tier thresholds: Excellent>=55, Good>=45, Fair>=30, Low<30"
+      - "Implement HudRenderer.ts: Pixi Text objects (distance top-left, fps top-right); style: >=16px, white, high contrast; position: distance at (8,8), fps at (screenW-8,8) right-anchored; max height 48px; init with layer + viewport bounds from GameController"
+    risk: MEDIUM
+    risk_reason: "HUD must fit within 48px top zone without overlapping notch; scoring spread must satisfy CoS >=3x requirement"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (HudRenderer + PerfTracker wired to GameController ticker)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk clean for cos_covered (canvas: HUD <=48px height, no board overlap; scoring: distance score spread >=10x from 100m to 1000m)"
+      - "screen root elements consume reserved_top_px=0 / reserved_bottom_px=64 — HUD placed at top, clear of logo zone"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # =============================================================================
+  # BATCH 5 — P0 — Death Sequence + Run Persistence + Results Screen
+  # Player sees: runner dissolves on death; results screen shows distance + FPS; RETRY works
+  # =============================================================================
+  - id: 5
+    name: "Death Sequence + Run Persistence + Results Screen"
+    priority: P0
+    player_visible: "runner hits obstacle or falls; GSAP dissolve animation plays; fade to results screen shows distance reached, best distance, FPS average; RETRY and HOME buttons both work"
+    features: [death-sequence, run-persistence, results-screen]
+    cos_covered: [animated-dynamics]
+    ux_zones:
+      thumb_zone: [bottom, center]
+      touch_targets: [retry-button, home-button]
+      feedback_surfaces: [canvas, distance-display, best-distance-display, fps-average-display]
+    acceptance:
+      - given: "runner collides with obstacle or falls off screen"
+        should: "phase transitions to Dying immediately; all pointer input blocked; GSAP tween fires (alpha 1->0, scale 1->0.5, duration 0.3s, power2.in); tween killed before sprite destroyed per guardrail #2/#18"
+      - given: "death tween completes"
+        should: "run snapshot recorded to localStorage (bestDistance, lastFpsAverage, runCount); canvas fades out (200ms GSAP alpha 0); goto('results') called"
+      - given: "results screen mounts"
+        should: "distance reached (meters, integer) displayed; best distance displayed (or 0 on first run); FPS average displayed; screen fades in after GPU teardown completes"
+      - given: "player taps RETRY button on results screen"
+        should: "goto('game') called; new run starts with runCount incremented; RETRY button tap target >=44px"
+      - given: "player taps HOME button on results screen"
+        should: "goto('start') called; HOME button tap target >=44px; >=8px spacing between RETRY and HOME"
+      - given: "results screen reads stored data"
+        should: "localStorage keys 'runbench-best-distance', 'runbench-last-fps-avg', 'runbench-run-count' read correctly; first run shows best=0"
+    test_loci:
+      - describe: "death sequence: animation and state transition"
+        file: "src/game/runbench/GameController.test.ts"
+        cases:
+          - "phase transitions to Dying immediately; all pointer input blocked; GSAP tween fires (alpha 1->0, scale 1->0.5, duration 0.3s, power2.in); tween killed before sprite destroyed per guardrail #2/#18"
+          - "run snapshot recorded to localStorage (bestDistance, lastFpsAverage, runCount); canvas fades out (200ms GSAP alpha 0); goto('results') called"
+      - describe: "runStorage: read/write localStorage"
+        file: "src/game/runbench/storage/runStorage.test.ts"
+        cases:
+          - "localStorage keys 'runbench-best-distance', 'runbench-last-fps-avg', 'runbench-run-count' read correctly; first run shows best=0"
+      - describe: "ResultsScreen: display values and navigation"
+        file: "src/game/runbench/screens/ResultsScreen.test.tsx"
+        cases:
+          - "distance reached (meters, integer) displayed; best distance displayed (or 0 on first run); FPS average displayed; screen fades in after GPU teardown completes"
+          - "goto('game') called; new run starts with runCount incremented; RETRY button tap target >=44px"
+          - "goto('start') called; HOME button tap target >=44px; >=8px spacing between RETRY and HOME"
+    files:
+      state:
+        - src/game/runbench/storage/runStorage.ts
+      integration:
+        - src/game/runbench/GameController.ts
+        - src/game/runbench/renderers/RunnerRenderer.ts
+        - src/game/screens/ResultsScreen.tsx
+      test:
+        - src/game/runbench/GameController.test.ts
+        - src/game/runbench/storage/runStorage.test.ts
+        - src/game/runbench/screens/ResultsScreen.test.tsx
+    how:
+      - "Add death sequence to GameController: on collision detection set phase=dying → block input → GSAP.to(runnerSprite, {alpha:0,pixi:{scaleX:0.5,scaleY:0.5},duration:0.3,ease:'power2.in',onComplete: async () => { runStorage.save(finalDistance,fpsAverage); await GSAP.to(gameContainer,{alpha:0,duration:0.2}); goto('results'); }}); kill tweens before sprite destroy"
+      - "Implement runStorage.ts: pure read/write helpers for localStorage keys 'runbench-best-distance', 'runbench-last-fps-avg', 'runbench-run-count'; exported as named functions (saveRun, loadBestDistance, loadLastFpsAvg, loadRunCount); no ECS/Pixi imports"
+      - "Replace ResultsScreen.tsx scaffold content: display distance (read from runStorage.loadBestDistance()), fps average, RETRY button (goto 'game') and HOME button (goto 'start') both >=44px tap targets, >=8px spacing; dark gradient background; state bridge: runStorage reads at mount (localStorage access is in DOM lifecycle per GDD analysis)"
+    risk: MEDIUM
+    risk_reason: "ECS → signal bridge must survive GPU teardown so results screen reads correct distance/FPS; GSAP destruction order critical (guardrail #2/#18)"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (death sequence in GameController; runStorage called after death tween; ResultsScreen reads from runStorage)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk clean for cos_covered (animated-dynamics: departure animated with dissolve/shrink per exit criterion)"
+      - "touch targets RETRY + HOME both >=44px confirmed by test"
+      - "destruction order for runner sprite: tweens killed → removeAllListeners → removeChild → destroy({children:true})"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # =============================================================================
+  # BATCH 6 — P1 — Obstacle Renderer (low wall + overhead beam)
+  # Player sees: tier 2+ obstacles; crouch under beams; jump over walls
+  # =============================================================================
+  - id: 6
+    name: "Obstacle Renderer — Low Wall + Overhead Beam"
+    priority: P1
+    player_visible: "at 100m+ player encounters low walls (jump over) and overhead beams (crouch under); hitting either triggers death sequence"
+    features: [obstacle-renderer]
+    cos_covered: [canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: []
+      feedback_surfaces: [canvas]
+    acceptance:
+      - given: "run reaches Tier 2 (distance >= 100m)"
+        should: "low wall obstacles begin appearing; each is a 16x48px vertical block anchored to platform top; visually distinct from platform"
+      - given: "run reaches Tier 2 (distance >= 100m)"
+        should: "overhead beam obstacles begin appearing; each is a full-width horizontal bar at Y=80px from screen top; visually distinct from sky background"
+      - given: "Tier 1 (distance < 100m)"
+        should: "zero obstacles rendered; obstacle-free corridor confirmed for first 100m"
+      - given: "runner hitbox intersects a low wall or overhead beam"
+        should: "death sequence fires immediately (same as batch 5); collision is not partial — any overlap = instant loss"
+      - given: "compound obstacle (low wall + overhead beam in same chunk)"
+        should: "compound placement forbidden by ChunkFactory; test asserts no chunk contains both types simultaneously"
+    test_loci:
+      - describe: "ObstacleRenderer + ChunkFactory: obstacle rules"
+        file: "src/game/runbench/renderers/ObstacleRenderer.test.ts"
+        cases:
+          - "low wall obstacles begin appearing; each is a 16x48px vertical block anchored to platform top; visually distinct from platform"
+          - "overhead beam obstacles begin appearing; each is a full-width horizontal bar at Y=80px from screen top; visually distinct from sky background"
+          - "zero obstacles rendered; obstacle-free corridor confirmed for first 100m"
+          - "collision is not partial — any overlap = instant loss"
+          - "compound placement forbidden by ChunkFactory; test asserts no chunk contains both types simultaneously"
+    files:
+      state:
+        - src/game/runbench/state/RunBenchPlugin.ts
+      integration:
+        - src/game/runbench/renderers/ObstacleRenderer.ts
+        - src/game/runbench/generation/ChunkFactory.ts
+        - src/game/runbench/GameController.ts
+      test:
+        - src/game/runbench/renderers/ObstacleRenderer.test.ts
+    how:
+      - "Add obstacle entity types to RunBenchPlugin: LowWall (16x48px), OverheadBeam (fullWidth x 16px at Y=80); add to ChunkFactory obstacle placement pass gated at distance>=100m; enforce compound-forbidden rule in placement pass"
+      - "Implement ObstacleRenderer.ts: emoji/text fallback for low wall (dark rectangle + '|' label) and overhead beam (dark bar + '-' label) until atlas; Pixi Graphics for shapes labeled with Text — satisfies design-smell anti-pattern (labeled shapes not unlabeled)"
+      - "Add collision detection in PhysicsSystem/GameController: check runner hitbox against obstacle entity bounds each frame; if intersection → dispatch death action; crouched hitbox (50% height) avoids overhead beam if player crouches"
+    risk: MEDIUM
+    risk_reason: "Collision detection correctness for crouched vs standing hitbox with overhead beam is subtle; compound-forbidden rule must be enforced in generation"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (ObstacleRenderer initialized in GameController; collision detection active in game loop)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "CoS sub-walk clean for cos_covered (canvas: obstacles visually distinct; animated-dynamics: death animation fires on collision)"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # =============================================================================
+  # BATCH 7 — P1 — Start Screen + Loading Screen Content Gaps
+  # Player sees: RunBench title, best distance, START button, tier badge; dark loading bg
+  # =============================================================================
+  - id: 7
+    name: "Start Screen + Loading Screen — content gaps"
+    priority: P1
+    player_visible: "loading screen has dark background (not green); start screen shows 'RunBench' title, best distance (0 on first run), large START button, performance tier badge (if runCount>0)"
+    features: [start-screen, loading-screen]
+    cos_covered: []
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: [start-button]
+      feedback_surfaces: [title-display, high-score-display, perf-tier-badge, progress-bar]
+    acceptance:
+      - given: "app boots for the first time"
+        should: "loading screen background is dark (not #BCE083); progress bar visible and advances; no green background anywhere in loading"
+      - given: "start screen mounts and runCount=0"
+        should: "title shows 'RunBench'; START button is large, centered, in thumb zone; best distance shows '0m'; NO tier badge rendered (runCount=0)"
+      - given: "start screen mounts and runCount>0"
+        should: "performance tier badge displays one of: Excellent/Good/Fair/Low based on lastFpsAverage thresholds; best distance shows actual best distance"
+      - given: "player taps START button"
+        should: "visual tap response within 100ms (scale or color shift); initGpu + loadCore called; goto('game') navigates"
+      - given: "START button rendered"
+        should: "tap target >=44px height and width; centered in bottom-center thumb zone (medium priority zone per core-guidelines)"
+    test_loci:
+      - describe: "StartScreen: content and tier badge logic"
+        file: "src/game/runbench/screens/StartScreen.test.tsx"
+        cases:
+          - "title shows 'RunBench'; START button is large, centered, in thumb zone; best distance shows '0m'; NO tier badge rendered (runCount=0)"
+          - "performance tier badge displays one of: Excellent/Good/Fair/Low based on lastFpsAverage thresholds; best distance shows actual best distance"
+          - "visual tap response within 100ms (scale or color shift); initGpu + loadCore called; goto('game') navigates"
+          - "tap target >=44px height and width; centered in bottom-center thumb zone (medium priority zone per core-guidelines)"
+      - describe: "LoadingScreen: background color"
+        file: "src/game/runbench/screens/LoadingScreen.test.tsx"
+        cases:
+          - "loading screen background is dark (not #BCE083); progress bar visible and advances; no green background anywhere in loading"
+    files:
+      state: []
+      integration:
+        - src/game/screens/LoadingScreen.tsx
+        - src/game/runbench/screens/startView.ts
+        - src/game/mygame/screens/startView.ts
+        - src/game/mygame/index.ts
+      test:
+        - src/game/runbench/screens/StartScreen.test.tsx
+        - src/game/runbench/screens/LoadingScreen.test.tsx
+    how:
+      - "Create src/game/runbench/screens/startView.ts with RunBench-specific start screen: title 'RunBench', best distance label (reads runStorage.loadBestDistance()), START button (>=44px, centered, tapResponse<100ms via pointer feedback), tier badge (conditional on runCount>0, badge text from PerfTracker tier thresholds); DOM mode is correct here (start screen is DOM layer per gpu-vs-dom rule)"
+      - "Update src/game/mygame/screens/startView.ts to re-export from runbench: 'export { setupStartScreen } from \"~/game/runbench/screens/startView\"'; update src/game/mygame/index.ts similarly; StartScreen.tsx import path stays unchanged (not in src/core/)"
+      - "Fix LoadingScreen.tsx: change bg-[#BCE083] to bg-slate-900 (dark background per GDD); progress bar already functional; no other structural changes needed"
+    risk: MEDIUM
+    risk_reason: "Content gap fix in StartScreen requires reading runStorage at mount (DOM lifecycle) and rendering tier badge conditionally; 100ms tap feedback is a hard constraint"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (LoadingScreen.tsx dark background; startView.ts reads runStorage)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "no #BCE083 green in LoadingScreen; confirmed by test string match"
+      - "START button tap target >=44px; tier badge only shown when runCount>0"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+  # =============================================================================
+  # BATCH 8 — P1 — Asset Bundle Registration (scene-runbench in manifest)
+  # Player sees: no change yet (sprites not yet generated); manifest wired for future atlas load
+  # =============================================================================
+  - id: 8
+    name: "Asset Bundle Registration — scene-runbench manifest entry"
+    priority: P1
+    player_visible: "no visible change until atlas assets exist; bundle registration allows LoadingScreen to track scene-runbench loading progress when atlas is later added"
+    features: [asset-bundle]
+    cos_covered: [canvas]
+    ux_zones:
+      thumb_zone: [center]
+      touch_targets: []
+      feedback_surfaces: [progress-bar]
+    acceptance:
+      - given: "asset-manifest.ts is read"
+        should: "bundle 'scene-runbench' exists with name matching ^[a-z][a-z0-9-]*$ pattern; alias='scene-runbench'; src='atlas-runbench.json' (placeholder path, not loaded until file exists)"
+      - given: "LoadingScreen loads scene-runbench bundle name"
+        should: "bundlesByPrefix('scene-') includes 'scene-runbench'; progress bar accounts for it"
+      - given: "manifest check:manifest script runs"
+        should: "bun run check:manifest passes with no errors on the scene-runbench bundle entry"
+    test_loci:
+      - describe: "asset-manifest: scene-runbench bundle registration"
+        file: "src/game/asset-manifest.test.ts"
+        cases:
+          - "bundle 'scene-runbench' exists with name matching ^[a-z][a-z0-9-]*$ pattern; alias='scene-runbench'; src='atlas-runbench.json' (placeholder path, not loaded until file exists)"
+          - "bundlesByPrefix('scene-') includes 'scene-runbench'; progress bar accounts for it"
+    files:
+      state: []
+      integration:
+        - src/game/asset-manifest.ts
+      test:
+        - src/game/asset-manifest.test.ts
+    how:
+      - "Add scene-runbench bundle to asset-manifest.ts: { name: 'scene-runbench', assets: [{ alias: 'scene-runbench', src: 'atlas-runbench.json' }] }; note in comment that atlas-runbench.json is generated in asset-gen pass"
+      - "LoadingScreen already uses bundlesByPrefix('scene-') to include scene bundles in coreBundles — no change needed there; verify the filtering logic captures scene-runbench"
+      - "Run bun run check:manifest to validate; fix any naming violations before committing"
+    risk: LOW
+    risk_reason: "Pure manifest registration; no runtime logic change; bundle not loaded until atlas file exists"
+    definition_of_done:
+      - "acceptance[] tests go red then green"
+      - "integration call site exists at files.integration (asset-manifest.ts has scene-runbench entry)"
+      - "every file in files.integration is exercised by at least one acceptance test"
+      - "bun run check:manifest passes"
+      - "bun run build + bun test pass within 3 fix cycles"
+
+warnings:
+  - "collision-resolved:pointer-event-model — skill-wins (core-interaction.md + mobile-constraints.mdc guardrail #4); gdd-ask=touchstart/mousedown per-platform split dropped"
+  - "collision-resolved:screen-id:run-over — skill-wins (scaffold-state valid screen IDs: loading|start|game|results); gdd-ask='Run Over Screen' as new ID dropped; results screen ID used"
+  - "self-audit:src-core-readonly — PASS: no batch files.* entry under src/core/"
+  - "self-audit:no-stubs-no-placeholders — PASS: all resolved_questions_scalars contain concrete values; no placeholder strings detected"
+  - "self-audit:slug-substitution-complete — PASS: no <game-root> tokens remain; all paths use src/game/runbench/"
+  - "self-audit:collision-resolution-coverage — PASS: both collision:* entries from gdd-analysis.yml have matching collision-resolved:* entries above"
+  - "self-audit:integration-file-coverage — PASS: every file in batches[].files.integration is referenced by at least one acceptance[].should row"

@@ -37,6 +37,8 @@ export interface GameControllerDeps {
   audio: unknown;
   gameData: unknown;
   analytics: unknown;
+  /** Optional navigation callback — used by games that trigger screen transitions (e.g. death → results). */
+  goto?: (screen: string) => void;
 }
 
 export interface GameController {
@@ -52,6 +54,8 @@ export interface GameController {
    * Defaults to 'dom' if omitted.
    */
   gameMode?: GameMode;
+  /** Optional: manually trigger death sequence (e.g. from collision detection or test). */
+  triggerDeath?: () => void;
 }
 
 export type SetupGame = (deps: GameControllerDeps) => GameController;

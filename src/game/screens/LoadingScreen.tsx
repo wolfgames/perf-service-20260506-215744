@@ -94,7 +94,7 @@ export function LoadingScreen() {
   });
 
   return (
-    <div class="fixed inset-0 flex flex-col items-center justify-center bg-[#BCE083]">
+    <div class="fixed inset-0 flex flex-col items-center justify-center bg-slate-900">
       <Show
         when={failedBundles().length === 0}
         fallback={

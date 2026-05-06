@@ -46,19 +46,11 @@ export const manifest: Manifest = {
       assets: [{ alias: 'atlas-branding-wolf', src: 'atlas-branding-wolf.json' }],
     },
 
-    // When adding bundles for your game, use the appropriate prefix:
-    //
-    //   scene-*  → GPU spritesheets, backgrounds, tiles
-    //   core-*   → GPU in-game UI atlases
-    //   fx-*     → GPU particles, effects, VFX
-    //   audio-*  → Howler sound effects and music
-    //   data-*   → JSON config files
-    //   boot-*   → DOM pre-engine splash assets
-    //
-    // Examples:
-    //   { name: 'scene-tiles-mygame', assets: [{ alias: 'scene-tiles-mygame', src: 'atlas-tiles-mygame.json' }] },
-    //   { name: 'fx-blast', assets: [{ alias: 'fx-blast', src: 'vfx-blast.json' }] },
-    //   { name: 'audio-sfx-mygame', assets: [{ alias: 'audio-sfx-mygame', src: 'sfx-mygame.json' }] },
-    //   { name: 'audio-music-mygame', assets: [{ alias: 'audio-music-mygame', src: 'music-mygame.json' }] },
+    // RunBench — GPU spritesheet atlas (placeholder; atlas-runbench.json generated in asset-gen pass)
+    // LoadingScreen's bundlesByPrefix('scene-') picks this up for progress tracking.
+    {
+      name: 'scene-runbench',
+      assets: [{ alias: 'scene-runbench', src: 'atlas-runbench.json' }],
+    },
   ],
 };

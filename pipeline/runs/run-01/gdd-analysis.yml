@@ -1,0 +1,553 @@
+# gdd-analysis.yml — Structured feature delta
+# Written by phase 20 (analyze). Read by plan, implement, player-flow, stabilize.
+
+game: "RunBench"
+counts:
+  exists: 1
+  partial: 0
+  new: 14
+  conflict: 0
+  content_gap: 3
+conflict_breakdown:
+  reuse: 0
+  adapt: 0
+  replace: 0
+high_risk: 2
+open_questions: 3
+
+# ---------------------------------------------------------------------------
+# FEATURES
+# ---------------------------------------------------------------------------
+
+features:
+
+  # -------------------------------------------------------------------------
+  # EXISTS — scaffold infrastructure already present; content doesn't match GDD
+  # -------------------------------------------------------------------------
+
+  - id: loading-screen
+    name: "Loading Screen"
+    status: content-gap
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: BOOT
+    cos_required: []
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [progress-bar]
+    affected_files:
+      - src/game/screens/LoadingScreen.tsx
+      - src/game/asset-manifest.ts
+    dependencies: []
+    ux:
+      discovery: "Player sees a progress bar on a dark background while assets load"
+      feedback: "Progress bar advances visually as bundles resolve"
+      onboarding: "Passive — no player action required"
+    notes: >
+      Scaffold LoadingScreen.tsx exists and is functional. Content gap: current background
+      is green (#BCE083); GDD specifies dark background. Bundle name must be 'scene-runbench'
+      per GDD. The loading screen logic is otherwise structurally correct (progress, auto-advance).
+
+  - id: start-screen
+    name: "Title / Start Screen"
+    status: content-gap
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: TITLE
+    cos_required: []
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [start-button]
+      feedback_surfaces: [title-display, high-score-display, perf-tier-badge]
+    affected_files:
+      - src/game/screens/StartScreen.tsx
+      - src/game/mygame/screens/startView.ts
+    dependencies: [perf-tracking]
+    ux:
+      discovery: "START button large and centered in thumb zone"
+      feedback: "Button responds visually on tap; 100ms tap feedback required"
+      onboarding: "High score and performance tier badge surface after run count > 0"
+    notes: >
+      Scaffold StartScreen.tsx + startView.ts exist and wire initGpu/unlockAudio correctly.
+      Content gap: current title is generic 'Start Screen'; GDD requires game name, best
+      distance, START button, and performance tier badge (conditional on run count > 0).
+      startView.ts is a DOM stub — needs replacement with RunBench-specific content.
+
+  - id: results-screen
+    name: "Run Over Screen"
+    status: content-gap
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: OUTCOME
+    cos_required: []
+    ux_zones:
+      thumb_zone: bottom
+      touch_targets: [retry-button, home-button]
+      feedback_surfaces: [distance-display, best-distance-display, fps-average-display]
+    affected_files:
+      - src/game/screens/ResultsScreen.tsx
+    dependencies: [perf-tracking, run-persistence]
+    ux:
+      discovery: "RETRY button primary (bottom, large); HOME button secondary"
+      feedback: "Screen fades in after death animation completes; results revealed immediately"
+      onboarding: "N/A — player has already played at least once to reach this screen"
+    notes: >
+      Scaffold ResultsScreen.tsx exists. Content gap: current screen shows generic 'Game Over'
+      with score; GDD requires distance reached, best distance, FPS average for the run, and
+      two explicit buttons RETRY and HOME. State flow: ECS → signal bridge must survive GPU
+      teardown so results screen can read distance/FPS values.
+
+  # -------------------------------------------------------------------------
+  # EXISTS — scaffold level; content matches GDD structure
+  # -------------------------------------------------------------------------
+
+  - id: game-screen-shell
+    name: "Gameplay Screen Shell (DOM wrapper)"
+    status: exists
+    risk: LOW
+    complexity: low
+    lifecycle_phase: PLAY
+    cos_required: [core-interaction, canvas, animated-dynamics, scoring]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-canvas]
+      feedback_surfaces: [hud-distance, hud-fps]
+    affected_files:
+      - src/game/screens/GameScreen.tsx
+    dependencies: []
+    ux:
+      discovery: "Full-screen canvas; player taps anywhere to jump"
+      feedback: "Immediate visual response to tap (jump initiates)"
+      onboarding: "Tutorial corridor introduces mechanics naturally"
+    notes: >
+      GameScreen.tsx shell exists and correctly mounts/destroys the game controller.
+      PauseOverlay and Logo DOM overlays are present. No pause button by GDD design —
+      PauseOverlay is scaffold-managed and should be suppressed or kept inert for RunBench
+      (GDD: 'no pause button by design'). Logo at bottom-8 uses reserved_bottom_px=64 from
+      prime context — logo is approximately 32px tall, sits within reserved zone.
+
+  # -------------------------------------------------------------------------
+  # NEW features — must be built from scratch
+  # -------------------------------------------------------------------------
+
+  - id: game-controller-pixi
+    name: "GameController (Pixi mode)"
+    status: new
+    risk: HIGH
+    complexity: high
+    lifecycle_phase: PLAY
+    cos_required: [core-interaction, canvas, animated-dynamics, scoring]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-canvas]
+      feedback_surfaces: [canvas]
+    affected_files:
+      - <game-root>/GameController.ts
+      - <game-root>/index.ts
+    dependencies: [runner-entity, platform-system, physics-engine, input-handler, procedural-gen, hud-renderer, perf-tracking]
+    ux:
+      discovery: "Auto-scroll makes the challenge immediately clear"
+      feedback: "Jump arc, landing impact, death animation are all immediate visual responses"
+      onboarding: "Tutorial corridor (first 10s of run 1) is a safe corridor that teaches tap-to-jump"
+    notes: >
+      Central integration point. Replaces DOM-mode stub in mygame/screens/gameController.ts.
+      Must init Pixi Application (gameMode: 'pixi'), create layer hierarchy (bg, game, hud, ui),
+      wire ECS DB, bridge to signals, set up input routing. Touches viewport layout.
+      risk-rules.md: touches GameController => HIGH. Destruction order: GSAP → Pixi → ECS bridge → setActiveDb(null).
+
+  - id: runner-entity
+    name: "Runner Entity (sprite + physics state)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: PLAY
+    cos_required: [core-interaction, canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [canvas]
+    affected_files:
+      - <game-root>/entities/Runner.ts
+      - <game-root>/state/RunBenchPlugin.ts
+    dependencies: [physics-engine, input-handler]
+    ux:
+      discovery: "Runner is visually distinct as the only moving silhouette"
+      feedback: "Animation strip switches: run-cycle (8 frames) on ground, jump pose airborne, fall pose descending"
+      onboarding: "Tutorial corridor keeps runner safe for 10 seconds while player learns jump"
+    notes: >
+      32×48 px silhouette sprite. States: run-cycle, jump pose, fall pose.
+      ECS component: position (x,y), velocity (vx,vy), jumpCount (0–2), state (idle|airborne|crouching|dying).
+      GDD specifies runner X is locked to 30% screen width (camera follows); only Y moves.
+      Hitbox shrinks 50% when crouching.
+
+  - id: physics-engine
+    name: "Physics Engine (gravity, velocity, collision)"
+    status: new
+    risk: MEDIUM
+    complexity: high
+    lifecycle_phase: PLAY
+    cos_required: [core-interaction, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [canvas]
+    affected_files:
+      - <game-root>/systems/PhysicsSystem.ts
+      - <game-root>/state/RunBenchPlugin.ts
+    dependencies: []
+    ux:
+      discovery: "Gravity is immediately apparent when the runner falls off a platform edge"
+      feedback: "Fall arc follows parabolic physics; landing resets state immediately"
+      onboarding: "First tutorial platform is wide enough that player cannot miss it"
+    notes: >
+      Rules from GDD: gravity = +2200 px/s², jump V = −900 px/s, double-jump V = −700 px/s,
+      land resets jump count to 0. One-way platforms (no collision from below).
+      Moving platform: runner inherits Y velocity while standing. Crumbling: 600ms timer on
+      first contact, resets if re-landed before expiry.
+      Camera lag: runner Y tracked with 80ms lag; X locked to 30% screen width.
+      Scroll speed: 240 px/s start, +10 px/s per 100m distance.
+      Pure step() function — no Math.random(), no Pixi imports. seeded RNG for platform gen only.
+
+  - id: input-handler
+    name: "Input Handler (tap / tap-and-hold)"
+    status: new
+    risk: HIGH
+    complexity: med
+    lifecycle_phase: PLAY
+    cos_required: [core-interaction]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-canvas]
+      feedback_surfaces: [canvas, runner-sprite]
+    affected_files:
+      - <game-root>/input/InputHandler.ts
+    dependencies: [runner-entity]
+    ux:
+      discovery: "Screen-wide tap target — no targeting required"
+      feedback: "Jump animates immediately on tap release (<100ms); crouch lowers runner visually"
+      onboarding: "Tutorial corridor: first tap causes visible jump over a gap"
+    notes: >
+      GDD: tap < 200ms = jump; tap-hold ≥ 200ms = crouch (lowers hitbox 50%, min 300ms duration).
+      Double-jump: airborne + tap < 200ms + jumpCount==1.
+      Input blocked during Dying state.
+      COLLISION DETECTED: GDD specifies 'touchstart on mobile; mousedown on web' — skill requires
+      pointer events (pointerdown/pointerup). Recorded in warnings[]. Plan resolves as critical
+      (guardrail #4 / core-interaction CoS).
+      touch-action: none on canvas container required (mobile-constraints.mdc).
+      Tap feedback target: < 100ms visual response per core-guidelines.
+
+  - id: platform-renderer
+    name: "Platform Renderer (Normal, Moving, Crumbling)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: PLAY
+    cos_required: [canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [canvas]
+    affected_files:
+      - <game-root>/renderers/PlatformRenderer.ts
+    dependencies: [procedural-gen, physics-engine]
+    ux:
+      discovery: "Moving platform oscillation indicator (tint shift) differentiates platform type at a glance"
+      feedback: "Crumbling platform crack overlay + crumble animation on contact"
+      onboarding: "Tier 1 (first 100m) is Normal-only — player learns standard platforms first"
+    notes: >
+      Normal: solid rectangle 96–256 × 16 px, mid-grey.
+      Moving: same + tint-shift indicator, oscillates Y between two positions at 40–80 px/s.
+      Crumbling: + crack overlay sprite; triggers crumble timer (600ms) on contact; GSAP dissolve
+      animation on crumble. Platform has stable identity for animation diffing.
+      canvas CoS: minimum visible platform width 96px > 48px threshold; satisfies min-piece-size for platforms.
+
+  - id: obstacle-renderer
+    name: "Obstacle Renderer (Low Wall, Overhead Beam)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: PLAY
+    cos_required: [canvas, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [canvas]
+    affected_files:
+      - <game-root>/renderers/ObstacleRenderer.ts
+    dependencies: [procedural-gen]
+    ux:
+      discovery: "Low wall: visually distinct vertical block on platform; Overhead beam: full-width bar"
+      feedback: "Collision triggers death animation immediately"
+      onboarding: "Obstacles absent in Tier 1; first introduced in Tier 2 (>100m)"
+    notes: >
+      Low wall: 16×48 px solid rectangle anchored to platform top.
+      Overhead beam: full-width horizontal bar at Y=80px from screen top.
+      Neither obstacle has partial collision — hit = instant loss.
+      Compound obstacle (low wall + overhead beam) forbidden per GDD in same chunk.
+
+  - id: procedural-gen
+    name: "Procedural Level Generation"
+    status: new
+    risk: MEDIUM
+    complexity: high
+    lifecycle_phase: PLAY
+    cos_required: [core-interaction, animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: []
+    affected_files:
+      - <game-root>/generation/ChunkFactory.ts
+      - <game-root>/generation/SolvabilityChecker.ts
+      - <game-root>/data/tutorialChunk.ts
+      - <game-root>/data/fallbackChunk.ts
+    dependencies: [physics-engine]
+    ux:
+      discovery: "Difficulty escalates gradually; player encounters new mechanics at milestone distances"
+      feedback: "Chunk boundaries are invisible — seamless scroll"
+      onboarding: "Tutorial corridor: 3 wide Normal platforms, no obstacles, gaps=48px, first 10s of Run 1"
+    notes: >
+      Four-step algorithm: Chunk Factory → Obstacle Placement → Platform Type Assignment → Solvability Check.
+      PRNG: mulberry32; seed = runNumber * 48271 + deviceId_hash. Deterministic and reproducible.
+      Tier gates: 0–100m Tier1, 100–300m Tier2, 300–600m Tier3, 600m+ Tier4.
+      Retry limit: 10 per chunk; fallback chunk (3-platform staircase) on retry exhaustion.
+      Pure generation logic — no Pixi/DOM imports; seeded RNG passed via args (ECS purity rule compliant).
+      Solvability check simulates runner at minimum skill (single jump only).
+
+  - id: hud-renderer
+    name: "HUD Renderer (Distance + FPS)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: PLAY
+    cos_required: [canvas]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [hud-distance, hud-fps]
+    affected_files:
+      - <game-root>/renderers/HudRenderer.ts
+    dependencies: [perf-tracking, physics-engine]
+    ux:
+      discovery: "Distance top-left; FPS top-right — passive info, no tap targets"
+      feedback: "Distance counter increments in real-time as runner scrolls right"
+      onboarding: "HUD visible from start of run; no explanation needed"
+    notes: >
+      HUD elements placed at screen top (low/stretching priority zone) — correct per core-guidelines
+      (passive info belongs at top, not interactive). Typography ≥ 16px, contrast ≥ 4.5:1 required.
+      FPS counter updates each frame via GPU ticker; no input target.
+      reserved_top_px=0 from prime context; HUD must not exceed ~48px height to stay clear of notch.
+
+  - id: perf-tracking
+    name: "Performance Tracking (FPS sampling + run snapshot)"
+    status: new
+    risk: LOW
+    complexity: med
+    lifecycle_phase: PLAY
+    cos_required: [scoring]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [hud-fps, results-screen]
+    affected_files:
+      - <game-root>/systems/PerfTracker.ts
+    dependencies: []
+    ux:
+      discovery: "FPS shown live in HUD; FPS average shown in Run Over Screen"
+      feedback: "Snapshot persisted to localStorage after each run"
+      onboarding: "Performance tier badge appears on Title Screen after first run (run count > 0)"
+    notes: >
+      Samples FPS per frame via Pixi ticker; computes running average.
+      On run end: records distance + FPS average to localStorage.
+      Performance tier derived from FPS average (thresholds TBD — open question).
+      PerfTracker reads from ECS resource or signal; does not hold mutable state directly.
+
+  - id: run-persistence
+    name: "Run Persistence (localStorage: best distance, FPS average)"
+    status: new
+    risk: LOW
+    complexity: low
+    lifecycle_phase: OUTCOME
+    cos_required: []
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [start-screen, results-screen]
+    affected_files:
+      - <game-root>/storage/runStorage.ts
+    dependencies: [perf-tracking]
+    ux:
+      discovery: "Best distance shown on Title Screen; FPS average shown on Run Over Screen"
+      feedback: "Values update immediately after run completes"
+      onboarding: "First run shows 0 / no prior data; values appear after first death"
+    notes: >
+      Persists to localStorage: bestDistance (number), lastFpsAverage (number), runCount (number).
+      No cloud sync; no currency; no authentication. Pure read/write helpers.
+      localStorage access is in DOM lifecycle (screen shells), not in ECS actions or GPU game code.
+
+  - id: scoring-system
+    name: "Scoring System (distance-based)"
+    status: new
+    risk: LOW
+    complexity: low
+    lifecycle_phase: PLAY
+    cos_required: [scoring]
+    ux_zones:
+      thumb_zone: out-of-reach
+      touch_targets: []
+      feedback_surfaces: [hud-distance]
+    affected_files:
+      - <game-root>/state/RunBenchPlugin.ts
+    dependencies: [physics-engine]
+    ux:
+      discovery: "Distance counter is the live score — players understand it immediately"
+      feedback: "Counter updates in real-time; milestone distance gates (100m, 300m, 600m, 1000m) mark progression"
+      onboarding: "No explanation needed — distance is self-evident"
+    notes: >
+      Score = distance traveled (meters). Scroll speed drives distance accumulation.
+      No combo or chain multiplier in core pass (endless runner; no match mechanic).
+      scoring CoS core-pass requirement: base scoring varies with action magnitude.
+      For RunBench: distance IS the scoring dimension; speed increase with distance provides
+      the 'skill vs beginner' spread. A skilled player reaching 1000m scores ~10x a beginner
+      reaching 100m — satisfies ≥3x spread requirement. Secondary multiplier (survival streaks,
+      obstacle clears) is deferred to secondary pass per gdd-config.yml (secondary: false).
+      scoring CoS base pass satisfied by: score = distance accumulated, grows with distance/difficulty.
+
+  - id: death-sequence
+    name: "Death / Loss Sequence"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: PLAY
+    cos_required: [animated-dynamics]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: [canvas]
+    affected_files:
+      - <game-root>/GameController.ts
+      - <game-root>/renderers/RunnerRenderer.ts
+    dependencies: [runner-entity, physics-engine, run-persistence]
+    ux:
+      discovery: "Instant visual state change makes death unambiguous"
+      feedback: "GSAP tween: alpha 1→0, scale 1→0.5, 300ms, power2.in; canvas fade 200ms after"
+      onboarding: "N/A — failure is self-evident"
+    notes: >
+      Ordered: (1) set board state → Dying; (2) disable all input; (3) play death tween (300ms);
+      (4) record distance + FPS average to localStorage; (5) fade canvas out (200ms);
+      (6) goto('results'). GSAP tween must be killed before sprite destroy (guardrail #2/#18).
+      animated-dynamics CoS: departure is animated (dissolve/shrink) — satisfied by step 3.
+
+  - id: tutorial-corridor
+    name: "Tutorial Corridor (first 10s of Run 1)"
+    status: new
+    risk: LOW
+    complexity: low
+    lifecycle_phase: PLAY
+    cos_required: [core-interaction]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: [full-canvas]
+      feedback_surfaces: [canvas]
+    affected_files:
+      - <game-root>/data/tutorialChunk.ts
+    dependencies: [procedural-gen]
+    ux:
+      discovery: "Wide platforms, no obstacles — player discovers tap-to-jump within first 2 seconds"
+      feedback: "Successful jump over first gap is the aha moment"
+      onboarding: "3 wide Normal platforms, gaps=48px, no obstacles; hard-coded inline constant"
+    notes: >
+      First 10 seconds of Run 1 only; subsequent runs use procedural generation immediately.
+      Inline constant in tutorialChunk.ts — not generated, not configurable at runtime.
+      core-interaction CoS: 'first-time player can understand the action within 3 seconds' — satisfied
+      by tutorial corridor design constraints.
+
+  - id: asset-bundle
+    name: "Asset Bundle (scene-runbench)"
+    status: new
+    risk: MEDIUM
+    complexity: med
+    lifecycle_phase: BOOT
+    cos_required: [canvas]
+    ux_zones:
+      thumb_zone: center
+      touch_targets: []
+      feedback_surfaces: []
+    affected_files:
+      - src/game/asset-manifest.ts
+    dependencies: []
+    ux:
+      discovery: "Assets load during BOOT; player sees progress bar"
+      feedback: "Progress bar advances as bundles resolve"
+      onboarding: "N/A"
+    notes: >
+      Bundle name must be 'scene-runbench' (scene-* prefix for GPU/Pixi assets per asset-bundles rule).
+      Atlas must contain: runner sprite strip (run 8fr + jump 1fr + fall 1fr), normal platform,
+      crack overlay, low wall, overhead beam, gradient sky background.
+      No individual image loads — single atlas = single draw call (guardrail #7).
+      Current asset-manifest.ts is a scaffold stub and does not include scene-runbench.
+
+# ---------------------------------------------------------------------------
+# CONFLICTS
+# ---------------------------------------------------------------------------
+
+conflicts: []
+# No conflict features — all features are new or content-gap on a greenfield project.
+
+# ---------------------------------------------------------------------------
+# RISK AREAS
+# ---------------------------------------------------------------------------
+
+risk_areas:
+
+  - feature: game-controller-pixi
+    reason: >
+      Central integration point for Pixi init, ECS wiring, input routing, renderer lifecycle,
+      and viewport layout. Every other runtime feature depends on this. Destruction order is
+      complex (GSAP → Pixi → ECS bridge → setActiveDb(null)). Failure here blocks all gameplay.
+
+  - feature: input-handler
+    reason: >
+      Dual-gesture detection (tap vs tap-and-hold with 200ms threshold) on a single pointer
+      stream. Misclassification silently causes wrong actions (crouch fired as jump or vice versa).
+      Input must be blocked during Dying state. Mobile pointer-event discipline (touch-action: none,
+      pointer capture) critical for cross-platform correctness.
+
+  - feature: physics-engine
+    reason: >
+      Multi-variable physics (gravity, scroll speed, camera lag, moving-platform inheritance)
+      interact non-linearly. Determinism requirement (seeded PRNG, reproducible runs) constrains
+      implementation. Solvability checker must simulate physics accurately or generate unbeatable chunks.
+
+# ---------------------------------------------------------------------------
+# WARNINGS (collisions detected)
+# ---------------------------------------------------------------------------
+
+warnings:
+  - "collision:pointer-event-model — gdd=touchstart/mousedown (per-platform split) vs skill=pointerdown/pointerup (core-interaction.md + mobile-constraints.mdc) — critical"
+  - "collision:screen-id:run-over — gdd='Run Over Screen' (implied new ID) vs scaffold=results (valid IDs: loading|start|game|results, precedence.md) — critical"
+
+# ---------------------------------------------------------------------------
+# OPEN QUESTIONS
+# ---------------------------------------------------------------------------
+
+open_questions:
+
+  - question: "What are the FPS thresholds that define performance tiers (shown as a badge on Title Screen)?"
+    context: >
+      GDD says 'performance tier badge (if run count > 0)' but does not define tier boundaries.
+      Affects perf-tracking and start-screen features. Plan must either define thresholds or
+      leave badge label as 'Unknown tier' until secondary pass.
+
+  - question: "Does the PauseOverlay (scaffold-managed, present in GameScreen.tsx) need to be suppressed or left inert for RunBench?"
+    context: >
+      GDD explicitly states 'no pause button by design (performance test context)'.
+      PauseOverlay is a scaffold core component (src/core/ui/) — guardrail #8 forbids modifying src/core/.
+      Plan must decide: suppress pause trigger in game state, or leave PauseOverlay rendered but never triggered.
+
+  - question: "How should deviceId_hash be computed for the run seed formula?"
+    context: >
+      GDD specifies 'runSeed = runNumber * 48271 + deviceId_hash' but does not define deviceId_hash.
+      Options: hash of User-Agent string, hash of canvas fingerprint, or a random value persisted
+      to localStorage on first visit. Plan must choose an approach that is deterministic per device.

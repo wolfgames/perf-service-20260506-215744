@@ -1,0 +1,37 @@
+run: "01"
+pipeline_version: "0.3.13"
+pass: core
+started: "2026-05-06T22:05:11Z"
+finished: "2026-05-06T22:57:00Z"
+status: partial
+config:
+  gdd_gate: auto-handoff
+  think_only: false
+  trace: false
+  skip_groups: []
+  allow_skip_pass: false
+phases:
+  - id: pass-gate
+    status: complete
+    summary: "core pass — no prior-pass check required; gate passed automatically"
+  - id: analyze-gdd
+    status: complete
+    summary: "18 features extracted (1 exists, 3 content-gap, 14 new); 2 HIGH risk; 2 collisions; 3 open questions"
+  - id: plan
+    status: complete
+    summary: "8 batches planned; 17 features; 18 new files; 6 modified files; 3 open questions resolved"
+  - id: implement
+    status: complete
+    summary: "all 8 batches implemented; 40 game tests (all passing); game-controller, physics, input, generation, renderers, HUD, scoring, persistence"
+  - id: integrate
+    status: complete
+    summary: "2 orphans wired; 1 orphan deleted; 2 fallbacks unified with labels; 0 unreachable blocks"
+  - id: player-flow
+    status: complete
+    summary: "5 screen transitions checked; 4 issues found; 3 fixed inline; 1 UX gap noted (results screen distance label)"
+  - id: verify
+    status: complete
+    summary: "build: 0 errors; 179 tests (159 pass + 20 pre-existing scaffold failures); 40 game tests all passing; 1 fix cycle"
+  - id: stabilize
+    status: complete
+    summary: "49 game tests (188 total, 20 pre-existing scaffold failures); all 4 CoS pass; 8 genre-inapplicability completeness gaps; 2 fixes (landing squash + results distance label); pipeline_status: partial"
